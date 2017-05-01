@@ -5,6 +5,9 @@
 #include <list>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
+
+#define _DEBUG 1
 
 #include "util/debug_new/debug_new.h"
 #include "headers/gc_reference.hpp"
@@ -17,6 +20,10 @@ template <class T> class GCPointer {
   static bool initialized;
   static int instance_count;
 
+  static std::mutex m_lock;
+  static std::condition_variable cv;
+  static bool empty_references;
+
   typename list<GCReference<T> >::iterator findPtrInfo(T *ptr);
 
   // addr points to the allocated memory to which this GCPointer pointer currently points.
@@ -25,6 +32,8 @@ template <class T> class GCPointer {
   public:
 
     GCPointer(T *t=NULL) {
+
+      m_lock.lock();
 
       if (!initialized) {
         initialized = true;
@@ -41,9 +50,30 @@ template <class T> class GCPointer {
         reference_list.push_front(gcObj);
       }
 
+      if (!hasInstances()) {
+        std::thread([=] { startCollectionThread(); }).detach();
+      }
+
       instance_count++;
 
       addr = t;
+
+      m_lock.unlock();
+
+    }
+
+    void
+    startCollectionThread() {
+      #ifdef _DEBUG
+        cout << "Collection Thread Started" << std::endl;
+      #endif
+      while(hasInstances()) {
+        #ifdef _DEBUG
+          //cout << "Collection Thread Running" << std::endl;
+        #endif
+        collect();
+      }
+      cout << "end collection thread" << endl;
     }
 
     T *operator=(T *t);
@@ -65,7 +95,7 @@ template <class T> class GCPointer {
 
     static bool collect();
 
-    static bool isRunning() { return instance_count > 0; }
+    static bool hasInstances() { return instance_count > 0; }
 
     static void shutdown();
 
@@ -83,6 +113,8 @@ template <class T> class GCPointer {
 template <class T>
 GCPointer<T>::~GCPointer() {
 
+  m_lock.lock();
+
   typename list<GCReference<T> >::iterator p;
   p = findPtrInfo(addr);
 
@@ -92,9 +124,16 @@ GCPointer<T>::~GCPointer() {
 
   instance_count--;
 
+  if (!hasInstances()) {
+    cout << "No more instances" << std::endl;
+    //cv.notify_one();
+  }
+
   #ifdef _DEBUG
     cout << "GCPointer going out of scope.\n";
   #endif
+
+  m_lock.unlock();
 
 }
 
@@ -107,11 +146,9 @@ GCPointer<T>::~GCPointer() {
 template <class T>
 bool GCPointer<T>::collect() {
 
-  bool memfreed = false;
+  m_lock.lock();
 
-  #ifdef _DEBUG
-    cout << "Before garbage collection for ";
-  #endif
+  bool memfreed = false;
 
   typename list<GCReference<T> >::iterator p;
 
@@ -141,9 +178,7 @@ bool GCPointer<T>::collect() {
     }
   } while(p != reference_list.end());
 
-  #ifdef _DEBUG
-    cout << "After garbage collection for ";
-  #endif
+  m_lock.unlock();
 
   return memfreed;
 }
@@ -156,6 +191,7 @@ bool GCPointer<T>::collect() {
 
 template <class T>
 T * GCPointer<T>::operator=(T *t) {
+
 
   typename list<GCReference<T> >::iterator p;
 
@@ -200,6 +236,10 @@ template <class T> list<GCReference<T> > GCPointer<T>::reference_list;
 template <class T> bool GCPointer<T>::initialized = false;
 template <class T> int GCPointer<T>::instance_count = 0;
 
+template <class T> bool GCPointer<T>::empty_references = true;
+template <class T> std::mutex GCPointer<T>::m_lock;
+template <class T> std::condition_variable GCPointer<T>::cv;
+
 
 /*
 
@@ -225,11 +265,6 @@ void GCPointer<T>::shutdown() {
     return;
   }
 
-  typename list<GCReference<T> >::iterator p;
-  for(p = reference_list.begin(); p != reference_list.end(); p++) {
-    p->refcount = 0;
-  }
-
   #ifdef _DEBUG
     cout << "Before collecting for shutdown() for " << typeid(T).name() << "\n";
   #endif
@@ -239,6 +274,11 @@ void GCPointer<T>::shutdown() {
   #ifdef _DEBUG
     cout << "After collecting for shutdown() for " << typeid(T).name() << "\n";
   #endif
+
+  typename list<GCReference<T> >::iterator p;
+  for(p = reference_list.begin(); p != reference_list.end(); p++) {
+    p->refcount = 0;
+  }
 
 }
 
