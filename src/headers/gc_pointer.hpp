@@ -53,8 +53,11 @@ template <class T> class GCPointer {
       }
 
       if (!hasInstances()) {
+        std::cout << " creating new thread in constructor " << std::endl;
+        if(gc_thread.joinable()) {
+          gc_thread.join();
+        }
         gc_thread = std::thread([=] { startCollectionThread(); });
-        //gc_thread.detach();
       }
 
       instance_count++;
