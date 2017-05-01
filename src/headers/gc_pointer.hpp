@@ -23,6 +23,8 @@ template <class T> class GCPointer {
   static std::mutex m_lock;
   static std::condition_variable cv;
   static bool empty_references;
+  static std::thread gc_thread;
+
 
   typename list<GCReference<T> >::iterator findPtrInfo(T *ptr);
 
@@ -51,7 +53,8 @@ template <class T> class GCPointer {
       }
 
       if (!hasInstances()) {
-        std::thread([=] { startCollectionThread(); }).detach();
+        gc_thread = std::thread([=] { startCollectionThread(); });
+        //gc_thread.detach();
       }
 
       instance_count++;
@@ -73,7 +76,13 @@ template <class T> class GCPointer {
         #endif
         collect();
       }
+
+      cout << "running final collect" << endl;
+
+      collect();
+      m_lock.unlock();
       cout << "end collection thread" << endl;
+
     }
 
     T *operator=(T *t);
@@ -192,6 +201,7 @@ bool GCPointer<T>::collect() {
 template <class T>
 T * GCPointer<T>::operator=(T *t) {
 
+  m_lock.lock();
 
   typename list<GCReference<T> >::iterator p;
 
@@ -208,11 +218,15 @@ T * GCPointer<T>::operator=(T *t) {
 
   addr = t;
 
+  m_lock.unlock();
+
   return t;
 }
 
 template <class T>
 GCPointer<T> & GCPointer<T>::operator=(GCPointer &rv) {
+
+  m_lock.lock();
 
   typename list<GCPointer<T> >::iterator p;
 
@@ -222,6 +236,8 @@ GCPointer<T> & GCPointer<T>::operator=(GCPointer &rv) {
   p = findPtrInfo(rv.addr);
   p->refcount++;
   addr = rv.addr;
+
+  m_lock.unlock();
 
   return rv;
 }
@@ -239,6 +255,7 @@ template <class T> int GCPointer<T>::instance_count = 0;
 template <class T> bool GCPointer<T>::empty_references = true;
 template <class T> std::mutex GCPointer<T>::m_lock;
 template <class T> std::condition_variable GCPointer<T>::cv;
+template <class T> std::thread GCPointer<T>::gc_thread;
 
 
 /*
@@ -270,6 +287,8 @@ void GCPointer<T>::shutdown() {
   #endif
 
   collect();
+
+  if(gc_thread.joinable()) gc_thread.join();
 
   #ifdef _DEBUG
     cout << "After collecting for shutdown() for " << typeid(T).name() << "\n";
